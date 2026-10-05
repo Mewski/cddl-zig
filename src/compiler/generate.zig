@@ -41,7 +41,7 @@ pub fn generate(allocator: std.mem.Allocator, source: *const model.Model, option
         try emitter.add(",\n");
     }
     try emitter.add("};\n\n");
-    try emitter.add(@embedFile("codec_source.zig"));
+    try emitter.add(@embedFile("template.zig"));
     const text = try emitter.output.toOwnedSliceSentinel(allocator, 0);
     defer allocator.free(text);
     var tree = try std.zig.Ast.parse(allocator, text, .zig);

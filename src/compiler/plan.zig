@@ -121,7 +121,7 @@ pub fn build(allocator: std.mem.Allocator, source: *const model.Model, failed_no
     if (failed_node) |pointer| pointer.* = null;
     var identifiers = names.Names{ .allocator = a, .style = .pascal_case };
     defer identifiers.deinit();
-    const support = @embedFile("codec_source.zig");
+    const support = @embedFile("template.zig");
     var tokens = std.zig.Tokenizer.init(support);
     while (true) {
         const token = tokens.next();
