@@ -16,7 +16,7 @@ Related documents:
 | Path | Module | Responsibility | I/O |
 |---|---|---|---|
 | `src/compiler/` | `cddl_zig` (`src/root.zig` exports `compiler` and `runtime_abi`) | Sources, diagnostics, lexing, parsing, name resolution, semantic analysis, codec planning, Zig emission. | None. Callers pass in byte slices, and the compiler returns data. |
-| `runtime/` | `cddl_runtime` (`runtime/cddl_runtime.zig`) | Reading and writing CBOR without a schema, the generic `Value`, data-model equality, limits, and error classification. | No files or processes. Output goes to a fixed buffer or a `std.Io.Writer` the caller provides. |
+| `src/runtime/` | `cddl_runtime` (`src/runtime/cddl_runtime.zig`) | Reading and writing CBOR without a schema, the generic `Value`, data-model equality, limits, and error classification. | No files or processes. Output goes to a fixed buffer or a `std.Io.Writer` the caller provides. |
 | `src/cli/`, `src/main.zig` | executable `cddl-zig` | Argument parsing, reading files and stdin, rendering diagnostics, atomic output, exit status. | All process and file I/O happens here. |
 | `build.zig` | — | Publishes `cddl_zig` and `cddl_runtime`, and gives the executable the private `build_options` module (with `version`). | — |
 
