@@ -18,9 +18,11 @@ git clone https://github.com/Mewski/cddl-zig.git
 cd cddl-zig
 zig build
 zig build test
+export CDDL_ZIG="$PWD/zig-out/bin/cddl-zig"
 ```
 
-The executable is installed at `zig-out/bin/cddl-zig`.
+`CDDL_ZIG` now contains the absolute path to the built executable and remains
+usable after changing to another project directory.
 
 ## Quick start
 
@@ -34,16 +36,19 @@ packet = {
 }
 ```
 
-Generate a Zig module and vendor the matching runtime:
+From the application root, generate a Zig module and vendor the matching runtime.
+`runtime` creates its output directory; `generate -o` requires the output file's
+parent directory to exist.
 
 ```sh
-cddl-zig check packet.cddl
-cddl-zig generate -o src/packet.zig packet.cddl
-cddl-zig runtime -o src/cddl_runtime
+"$CDDL_ZIG" check packet.cddl
+"$CDDL_ZIG" runtime -o src/cddl_runtime
+"$CDDL_ZIG" generate -o src/packet.zig packet.cddl
 ```
 
 Expose `src/cddl_runtime/root.zig` to generated code as the module named
-`cddl_runtime`. A build file can do that directly:
+`cddl_runtime`. Inside `build(b: *std.Build)`, using the application's existing
+`target`, `optimize`, and `exe`, add:
 
 ```zig
 const runtime = b.addModule("cddl_runtime", .{
@@ -57,25 +62,35 @@ const packet = b.addModule("packet", .{
     .optimize = optimize,
     .imports = &.{.{ .name = "cddl_runtime", .module = runtime }},
 });
+exe.root_module.addImport("packet", packet);
 ```
 
-The schema above exports `Packet` and `PacketCodec`:
+Creating a named module does not automatically expose it to an executable; the
+last line supplies the `@import("packet")` dependency edge.
+
+The schema above exports `Packet` and `PacketCodec`. This complete Zig 0.16
+example encodes and decodes one value:
 
 ```zig
+const std = @import("std");
 const generated = @import("packet");
 
-const values = [_]i65{ 1, -2 };
-const packet: generated.Packet = .{
-    .id = 7,
-    .label = "ready",
-    .data = .{ .field_0 = &values },
-};
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const values = [_]i65{ 1, -2 };
+    const packet: generated.Packet = .{
+        .id = 7,
+        .label = "ready",
+        .data = .{ .field_0 = &values },
+    };
 
-const bytes = try generated.PacketCodec.encode(allocator, packet);
-defer allocator.free(bytes);
+    const bytes = try generated.PacketCodec.encode(allocator, packet);
+    defer allocator.free(bytes);
 
-var decoded = try generated.PacketCodec.decode(allocator, bytes, .{});
-defer decoded.deinit();
+    var decoded = try generated.PacketCodec.decode(allocator, bytes, .{});
+    defer decoded.deinit();
+    std.debug.assert(decoded.value.id == packet.id);
+}
 ```
 
 `decode` returns an arena-owning `Decoded`. Its `.value` and all nested slices
@@ -89,9 +104,11 @@ cddl-zig check [options] <file>
 cddl-zig generate [options] <file>
 cddl-zig runtime -o <directory> [--check]
 cddl-zig explain <CODE>
+cddl-zig help [<command>]
+cddl-zig version
 ```
 
-Run `cddl-zig help <command>` for the complete option set.
+Run `"$CDDL_ZIG" help <command>` for the complete option set.
 
 - `check` runs parsing, semantic analysis, codec planning, and source generation,
   but writes no generated source.
@@ -99,13 +116,26 @@ Run `cddl-zig help <command>` for the complete option set.
   only when its bytes differ. `--check -o <path>` writes nothing and exits 3 when
   the file is missing or stale.
 - `runtime` writes every source file required by `cddl_runtime` into a directory.
-  Its `--check` mode detects missing or changed runtime files.
+  Its `--check` mode detects missing or changed runtime files, ignores unrelated
+  files, writes nothing, and exits 3 when the runtime is stale.
 - `explain` prints the stable explanation for an `Edddd` diagnostic code.
+- `help` prints general or command-specific usage; `version` prints the package
+  version.
 
-Schema commands accept one file or `-` for stdin. `--root <rule>` selects a
-non-generic type rule instead of the first rule. Diagnostics support human and
-JSON output, bounded retention, explicit color control, and byte-accurate source
-locations.
+Schema commands accept exactly one file or `-` for stdin. Generated modules
+export every non-generic type rule. The root—the first rule by default, or the
+rule named by `--root <rule>`—must be a non-generic type rule; choosing a root
+validates that requirement but does not filter the generated exports.
+
+Diagnostics support bounded retention, byte-accurate locations, and explicit
+color control. `--diagnostics json` writes one JSON document to stderr for schema
+and I/O outcomes. Argument-parsing errors remain plain text; later usage errors,
+including an output path that resolves to the input, use the JSON document.
+
+Exit codes are 0 for success, 1 for schema diagnostics, 2 for usage or an unknown
+diagnostic code, 3 for stale `--check` output, 4 for I/O or input-limit failures,
+5 for out of memory, and 70 for an internal error. `"$CDDL_ZIG" help` is the
+authoritative command summary.
 
 ## Generated mapping
 
@@ -130,9 +160,10 @@ See [docs/mapping.md](docs/mapping.md) for ownership and mapping details.
 
 ## Standards and current boundary
 
-The parser and semantic analyzer implement the RFC 8610 core language with the
-RFC 9682 grammar and the RFC 8610 Appendix D prelude. The runtime follows RFC
-8949 and emits core deterministic CBOR.
+The frontend parses and normalizes the RFC 8610 core language using the RFC 9682
+grammar and the RFC 8610 Appendix D prelude. The generated-code support boundary
+is narrower and explicit below. The runtime follows RFC 8949; its high-level
+value encoder emits core deterministic CBOR.
 
 Generation deliberately rejects constructs for which this backend does not yet
 have an exact native mapping. Current hard errors include recursive type graphs,
@@ -155,7 +186,12 @@ The exact accepted and rejected sets are documented in
 
 The decoder accepts valid non-preferred CBOR by default. Set
 `require_deterministic` to reject non-preferred arguments, float widths, and map
-ordering. The encoder always emits core deterministic CBOR.
+ordering. Generated codec `encode`, `encodeValueAlloc`, and `Encoder.writeValue`
+emit core deterministic CBOR. `MapBuilder` orders encoded keys and rejects
+equivalent keys, but callers must supply deterministic key and value encodings.
+Lower-level `Encoder` methods such as `writeEncoded`, `writeFloat32`, and
+`writeFloat64` deliberately preserve caller-supplied bytes or widths;
+`writeMapHeader` requires keys to follow in deterministic order.
 
 ## Development
 
