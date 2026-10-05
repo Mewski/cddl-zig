@@ -7,9 +7,13 @@ pub fn build(b: *std.Build) void {
 
     const library = b.addModule("cddl_zig", .{
         .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
     });
     const runtime = b.addModule("cddl_runtime", .{
         .root_source_file = b.path("src/runtime/root.zig"),
+        .target = target,
+        .optimize = optimize,
     });
 
     const options = b.addOptions();
@@ -35,16 +39,8 @@ pub fn build(b: *std.Build) void {
     b.step("run", "Run cddl-zig (arguments after --)").dependOn(&run.step);
 
     const test_modules = [_]*std.Build.Module{
-        b.createModule(.{
-            .root_source_file = b.path("src/root.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-        b.createModule(.{
-            .root_source_file = b.path("src/runtime/root.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
+        library,
+        runtime,
         executable.root_module,
     };
 
