@@ -9,7 +9,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/root.zig"),
     });
     const runtime = b.addModule("cddl_runtime", .{
-        .root_source_file = b.path("src/runtime/cddl_runtime.zig"),
+        .root_source_file = b.path("src/runtime/root.zig"),
     });
 
     const options = b.addOptions();
@@ -41,7 +41,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
         b.createModule(.{
-            .root_source_file = b.path("src/runtime/cddl_runtime.zig"),
+            .root_source_file = b.path("src/runtime/root.zig"),
             .target = target,
             .optimize = optimize,
         }),

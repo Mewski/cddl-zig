@@ -7,10 +7,10 @@ pub const File = struct {
     contents: []const u8,
 };
 
-pub const root_path = "cddl_runtime.zig";
+pub const root_path = "root.zig";
 
 pub const files = [_]File{
-    .{ .path = "cddl_runtime.zig", .contents = @embedFile("cddl_runtime.zig") },
+    .{ .path = "root.zig", .contents = @embedFile("root.zig") },
     .{ .path = "canonical.zig", .contents = @embedFile("canonical.zig") },
     .{ .path = "decoder.zig", .contents = @embedFile("decoder.zig") },
     .{ .path = "embed.zig", .contents = @embedFile("embed.zig") },
