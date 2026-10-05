@@ -11,22 +11,34 @@ The project has no package dependencies.
 
 - Zig 0.16.0
 
-## Build
+## Install the CLI
+
+For a user-local release build:
 
 ```sh
 git clone https://github.com/Mewski/cddl-zig.git
 cd cddl-zig
-zig build
-zig build test
-export CDDL_ZIG="$PWD/zig-out/bin/cddl-zig"
+zig build -Doptimize=ReleaseSafe --prefix "$HOME/.local"
+export PATH="$HOME/.local/bin:$PATH"
+cddl-zig version
 ```
 
-`CDDL_ZIG` now contains the absolute path to the built executable and remains
-usable after changing to another project directory.
+`zig build` installs into `zig-out` by default. `--prefix "$HOME/.local"` uses
+Zig's standard installation-prefix mechanism and places the executable in
+`$HOME/.local/bin`; add that directory to the shell profile for persistent use.
+
+For checkout-local development instead:
+
+```sh
+zig build
+./zig-out/bin/cddl-zig version
+```
+
+`zig fetch` manages source dependencies; it does not install command-line tools.
 
 ## Quick start
 
-Given `packet.cddl`:
+Given `packet.cddl` in an application's root:
 
 ```cddl
 packet = {
@@ -36,23 +48,30 @@ packet = {
 }
 ```
 
-From the application root, generate a Zig module and vendor the matching runtime.
-`runtime` creates its output directory; `generate -o` requires the output file's
-parent directory to exist.
+Generate the Zig module:
 
 ```sh
-"$CDDL_ZIG" check packet.cddl
-"$CDDL_ZIG" runtime -o src/cddl_runtime
-"$CDDL_ZIG" generate -o src/packet.zig packet.cddl
+mkdir -p src
+cddl-zig check packet.cddl
+cddl-zig generate -o src/packet.zig packet.cddl
 ```
 
-Expose `src/cddl_runtime/root.zig` to generated code as the module named
-`cddl_runtime`. Inside `build(b: *std.Build)`, using the application's existing
-`target`, `optimize`, and `exe`, add:
+Add `cddl-zig` to the application's package manifest:
+
+```sh
+zig fetch --save=cddl_zig git+https://github.com/Mewski/cddl-zig.git
+```
+
+`zig fetch --save` writes the dependency URL and content hash to
+`build.zig.zon`. Commit that manifest so the fetched package contents remain
+reproducible.
+
+Generated source imports the runtime as `cddl_runtime`. Inside
+`build(b: *std.Build)`, using the application's existing `target`, `optimize`,
+and `exe`, add:
 
 ```zig
-const runtime = b.addModule("cddl_runtime", .{
-    .root_source_file = b.path("src/cddl_runtime/root.zig"),
+const cddl = b.dependency("cddl_zig", .{
     .target = target,
     .optimize = optimize,
 });
@@ -60,13 +79,22 @@ const packet = b.addModule("packet", .{
     .root_source_file = b.path("src/packet.zig"),
     .target = target,
     .optimize = optimize,
-    .imports = &.{.{ .name = "cddl_runtime", .module = runtime }},
+    .imports = &.{
+        .{ .name = "cddl_runtime", .module = cddl.module("cddl_runtime") },
+    },
 });
 exe.root_module.addImport("packet", packet);
 ```
 
-Creating a named module does not automatically expose it to an executable; the
-last line supplies the `@import("packet")` dependency edge.
+The dependency also exports `cddl_zig` for programs that invoke the compiler API
+directly:
+
+```zig
+exe.root_module.addImport("cddl_zig", cddl.module("cddl_zig"));
+```
+
+Creating a named module does not automatically expose it to an executable;
+`addImport` supplies the corresponding `@import` dependency edge.
 
 The schema above exports `Packet` and `PacketCodec`. This complete Zig 0.16
 example encodes and decodes one value:
@@ -108,7 +136,7 @@ cddl-zig help [<command>]
 cddl-zig version
 ```
 
-Run `"$CDDL_ZIG" help <command>` for the complete option set.
+Run `cddl-zig help <command>` for the complete option set.
 
 - `check` runs parsing, semantic analysis, codec planning, and source generation,
   but writes no generated source.
@@ -134,7 +162,7 @@ including an output path that resolves to the input, use the JSON document.
 
 Exit codes are 0 for success, 1 for schema diagnostics, 2 for usage or an unknown
 diagnostic code, 3 for stale `--check` output, 4 for I/O or input-limit failures,
-5 for out of memory, and 70 for an internal error. `"$CDDL_ZIG" help` is the
+5 for out of memory, and 70 for an internal error. `cddl-zig help` is the
 authoritative command summary.
 
 ## Generated mapping
