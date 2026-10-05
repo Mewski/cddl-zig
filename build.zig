@@ -5,7 +5,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const library = b.addModule("cddl_zig", .{
+    const library = b.addModule("cddl", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
@@ -26,7 +26,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "cddl_zig", .module = library },
+                .{ .name = "cddl", .module = library },
                 .{ .name = "cddl_runtime", .module = runtime },
             },
         }),

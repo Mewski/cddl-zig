@@ -1,5 +1,5 @@
 const std = @import("std");
-const compiler = @import("cddl_zig").compiler;
+const compiler = @import("cddl").compiler;
 
 /// Stable diagnostic catalog. The value is the four decimal digits after `E`.
 /// A code is never renumbered, reused, or given a different meaning.

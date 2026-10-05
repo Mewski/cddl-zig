@@ -1,5 +1,5 @@
 const std = @import("std");
-const compiler = @import("cddl_zig").compiler;
+const compiler = @import("cddl").compiler;
 const runtime_sources = @import("cddl_runtime").embed;
 const args = @import("args.zig");
 const help = @import("help.zig");

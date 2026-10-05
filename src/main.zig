@@ -1,6 +1,6 @@
 const std = @import("std");
 const cddl_runtime = @import("cddl_runtime");
-const cddl_zig = @import("cddl_zig");
+const cddl = @import("cddl");
 const cli = @import("cli/root.zig");
 const build_options = @import("build_options");
 
@@ -45,7 +45,7 @@ pub fn main(init: std.process.Init) u8 {
 }
 
 test "compiler targets the runtime ABI" {
-    try std.testing.expectEqual(cddl_runtime.abi_version, cddl_zig.runtime_abi);
+    try std.testing.expectEqual(cddl_runtime.abi_version, cddl.runtime_abi);
 }
 
 test {

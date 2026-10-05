@@ -4,7 +4,7 @@
 
 | Path | Module | Responsibility |
 |---|---|---|
-| `src/compiler/` | `cddl_zig.compiler` | Lexing, parsing, semantic normalization, generation planning, and Zig emission |
+| `src/compiler/` | `cddl.compiler` | Lexing, parsing, semantic normalization, generation planning, and Zig emission |
 | `src/runtime/` | `cddl_runtime` | Strict CBOR decode/validate and deterministic encode |
 | `src/cli/`, `src/main.zig` | `cddl-zig` | Arguments, file/stdin I/O, diagnostics, atomic output, and exit status |
 

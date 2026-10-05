@@ -1,5 +1,5 @@
 const std = @import("std");
-const compiler = @import("cddl_zig").compiler;
+const compiler = @import("cddl").compiler;
 const codes = @import("codes.zig");
 
 pub const Finding = struct {

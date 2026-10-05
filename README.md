@@ -56,10 +56,10 @@ cddl-zig check packet.cddl
 cddl-zig generate -o src/packet.zig packet.cddl
 ```
 
-Add `cddl-zig` to the application's package manifest:
+Add the `cddl` package to the application's package manifest:
 
 ```sh
-zig fetch --save=cddl_zig git+https://github.com/Mewski/cddl-zig.git
+zig fetch --save git+https://github.com/Mewski/cddl-zig.git
 ```
 
 `zig fetch --save` writes the dependency URL and content hash to
@@ -71,7 +71,7 @@ Generated source imports the runtime as `cddl_runtime`. Inside
 and `exe`, add:
 
 ```zig
-const cddl = b.dependency("cddl_zig", .{
+const cddl = b.dependency("cddl", .{
     .target = target,
     .optimize = optimize,
 });
@@ -86,11 +86,11 @@ const packet = b.addModule("packet", .{
 exe.root_module.addImport("packet", packet);
 ```
 
-The dependency also exports `cddl_zig` for programs that invoke the compiler API
+The dependency also exports `cddl` for programs that invoke the compiler API
 directly:
 
 ```zig
-exe.root_module.addImport("cddl_zig", cddl.module("cddl_zig"));
+exe.root_module.addImport("cddl", cddl.module("cddl"));
 ```
 
 Creating a named module does not automatically expose it to an executable;
