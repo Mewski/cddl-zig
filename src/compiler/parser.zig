@@ -457,15 +457,17 @@ test "nesting limit is explicit" {
     try std.testing.expectError(error.InvalidSyntax, parseWithOptions(std.testing.allocator, .{ .name = "deep", .text = "a = [[[[uint]]]]" }, &diagnostics, .{ .max_nesting = 2 }));
 }
 
-fn allocationCase(allocator: std.mem.Allocator) !void {
-    var diagnostics = diagnostic.Diagnostics.init(allocator);
-    defer diagnostics.deinit();
-    var ast = try parse(allocator, .{ .name = "allocation", .text = "x<t> = [a: t, ? b: h'4342', 0b11.5e2, (1 // 2)]" }, &diagnostics);
-    defer ast.deinit();
-}
-
 test "every allocation failure releases partial syntax trees" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, allocationCase, .{});
+    const Test = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var diagnostics = diagnostic.Diagnostics.init(allocator);
+            defer diagnostics.deinit();
+            var ast = try parse(allocator, .{ .name = "allocation", .text = "x<t> = [a: t, ? b: h'4342', 0b11.5e2, (1 // 2)]" }, &diagnostics);
+            defer ast.deinit();
+        }
+    };
+
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Test.run, .{});
 }
 
 test "representation heads retain bare major six and adjacent controls" {

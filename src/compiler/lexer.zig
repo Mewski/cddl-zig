@@ -101,6 +101,7 @@ pub const Lexer = struct {
                     if (!self.match('\n')) try self.report(.invalid_character, start, "carriage return must be followed by line feed");
                 },
                 ';' => {
+                    const comment_start = self.offset;
                     self.offset += 1;
                     while (self.offset < text.len and text[self.offset] != '\n' and text[self.offset] != '\r') {
                         const start = self.offset;
@@ -113,6 +114,7 @@ pub const Lexer = struct {
                         }
                     }
                     if (self.offset == text.len) try self.report(.expected_token, self.offset, "comment must end with a line feed");
+                    if (isModuleDirective(text, comment_start)) try self.report(.unsupported_extension, comment_start, "CDDL module directives (;# import, ;# include) are not supported");
                 },
                 else => return,
             }
@@ -264,11 +266,62 @@ fn ealpha(byte: u8) bool {
     return std.ascii.isAlphabetic(byte) or byte == '@' or byte == '_' or byte == '$';
 }
 
+/// draft-ietf-cbor-cddl-modules directive: `;#` in column 1, one or more
+/// spaces, then `import` or `include` followed by a space.
+fn isModuleDirective(text: []const u8, start: usize) bool {
+    if (start != 0 and text[start - 1] != '\n') return false;
+    if (!std.mem.startsWith(u8, text[start..], ";#")) return false;
+    const after_hash = start + 2;
+    const keyword = std.mem.indexOfNonePos(u8, text, after_hash, " ") orelse return false;
+    if (keyword == after_hash) return false;
+    const rest = text[keyword..];
+    return std.mem.startsWith(u8, rest, "import ") or std.mem.startsWith(u8, rest, "include ");
+}
+
 test "RFC tokens distinguish heads, augmentation and ranges" {
     var diagnostics = Diagnostics.init(std.testing.allocator);
     defer diagnostics.deinit();
     var lexer = Lexer.init(.{ .name = "test", .text = "$$x //= #6.24(uint) 0..1 0x1.fp+2 b64'YQ=='" }, &diagnostics);
     const expected = [_]Kind{ .identifier, .group_extend, .hash, .number, .dot, .number, .lparen, .identifier, .rparen, .number, .range_inclusive, .number, .number, .bytes, .eof };
+    for (expected) |kind| try std.testing.expectEqual(kind, (try lexer.next()).kind);
+    try std.testing.expect(!diagnostics.hasErrors());
+}
+
+test "column-1 module directives are unsupported extensions" {
+    const Case = struct { text: []const u8, directive: []const u8 };
+    const cases = [_]Case{
+        .{ .text = ";# import rfc9052\na = int\n", .directive = ";# import rfc9052" },
+        .{ .text = "a = int\r\n;#   include rfc9165 as x\r\n", .directive = ";#   include rfc9165 as x" },
+    };
+    for (cases) |case| {
+        var diagnostics = Diagnostics.init(std.testing.allocator);
+        defer diagnostics.deinit();
+        var lexer = Lexer.init(.{ .name = "test", .text = case.text }, &diagnostics);
+        const expected = [_]Kind{ .identifier, .equal, .identifier, .eof };
+        for (expected) |kind| try std.testing.expectEqual(kind, (try lexer.next()).kind);
+        try std.testing.expectEqual(@as(usize, 1), diagnostics.items.items.len);
+        const diagnostic = diagnostics.items.items[0];
+        try std.testing.expect(diagnostic.code == .unsupported_extension);
+        try std.testing.expectEqualStrings(case.directive, case.text[diagnostic.span.start..diagnostic.span.end]);
+    }
+}
+
+test "other comments, including directive look-alikes, stay comments" {
+    const text =
+        \\; plain comment
+        \\;####
+        \\;#
+        \\;# imports are described elsewhere
+        \\;#import x
+        \\;# include
+        \\ ;# import x
+        \\a = int ;# include y
+        \\
+    ;
+    var diagnostics = Diagnostics.init(std.testing.allocator);
+    defer diagnostics.deinit();
+    var lexer = Lexer.init(.{ .name = "test", .text = text }, &diagnostics);
+    const expected = [_]Kind{ .identifier, .equal, .identifier, .eof };
     for (expected) |kind| try std.testing.expectEqual(kind, (try lexer.next()).kind);
     try std.testing.expect(!diagnostics.hasErrors());
 }
