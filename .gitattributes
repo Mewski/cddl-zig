@@ -1,0 +1,5 @@
+* text=auto
+*.zig text eol=lf
+*.zon text eol=lf
+*.md text eol=lf
+*.cddl text eol=lf
