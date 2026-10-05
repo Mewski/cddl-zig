@@ -122,29 +122,27 @@ pub fn encode(buf: *[max_len]u8, major: Major, arg: u64) []const u8 {
     return buf[0..9];
 }
 
-const testing = std.testing;
-
 test "encode uses the shortest argument" {
     var buf: [max_len]u8 = undefined;
-    try testing.expectEqualSlices(u8, &.{0x17}, encode(&buf, .unsigned, 23));
-    try testing.expectEqualSlices(u8, &.{ 0x18, 0x18 }, encode(&buf, .unsigned, 24));
-    try testing.expectEqualSlices(u8, &.{ 0x19, 0x01, 0x00 }, encode(&buf, .unsigned, 256));
-    try testing.expectEqualSlices(u8, &.{ 0x1a, 0x00, 0x01, 0x00, 0x00 }, encode(&buf, .unsigned, 65536));
-    try testing.expectEqualSlices(u8, &.{ 0x3b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff }, encode(&buf, .negative, std.math.maxInt(u64)));
-    try testing.expectEqualSlices(u8, &.{ 0x9a, 0xff, 0xff, 0xff, 0xff }, encode(&buf, .array, 0xffff_ffff));
+    try std.testing.expectEqualSlices(u8, &.{0x17}, encode(&buf, .unsigned, 23));
+    try std.testing.expectEqualSlices(u8, &.{ 0x18, 0x18 }, encode(&buf, .unsigned, 24));
+    try std.testing.expectEqualSlices(u8, &.{ 0x19, 0x01, 0x00 }, encode(&buf, .unsigned, 256));
+    try std.testing.expectEqualSlices(u8, &.{ 0x1a, 0x00, 0x01, 0x00, 0x00 }, encode(&buf, .unsigned, 65536));
+    try std.testing.expectEqualSlices(u8, &.{ 0x3b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff }, encode(&buf, .negative, std.math.maxInt(u64)));
+    try std.testing.expectEqualSlices(u8, &.{ 0x9a, 0xff, 0xff, 0xff, 0xff }, encode(&buf, .array, 0xffff_ffff));
 }
 
 test "parse rejects malformed heads" {
-    try testing.expectError(error.UnexpectedEndOfInput, parse(&.{}, 0));
-    try testing.expectError(error.UnexpectedEndOfInput, parse(&.{ 0x19, 0x01 }, 0));
-    try testing.expectError(error.ReservedAdditionalInfo, parse(&.{0x1c}, 0));
-    try testing.expectError(error.ReservedAdditionalInfo, parse(&.{0xfe}, 0));
-    try testing.expectError(error.InvalidIndefiniteLength, parse(&.{0x1f}, 0));
-    try testing.expectError(error.InvalidIndefiniteLength, parse(&.{0x3f}, 0));
-    try testing.expectError(error.InvalidIndefiniteLength, parse(&.{0xdf}, 0));
-    try testing.expectError(error.InvalidSimpleValue, parse(&.{ 0xf8, 0x1f }, 0));
+    try std.testing.expectError(error.UnexpectedEndOfInput, parse(&.{}, 0));
+    try std.testing.expectError(error.UnexpectedEndOfInput, parse(&.{ 0x19, 0x01 }, 0));
+    try std.testing.expectError(error.ReservedAdditionalInfo, parse(&.{0x1c}, 0));
+    try std.testing.expectError(error.ReservedAdditionalInfo, parse(&.{0xfe}, 0));
+    try std.testing.expectError(error.InvalidIndefiniteLength, parse(&.{0x1f}, 0));
+    try std.testing.expectError(error.InvalidIndefiniteLength, parse(&.{0x3f}, 0));
+    try std.testing.expectError(error.InvalidIndefiniteLength, parse(&.{0xdf}, 0));
+    try std.testing.expectError(error.InvalidSimpleValue, parse(&.{ 0xf8, 0x1f }, 0));
     const h = try parse(&.{ 0x00, 0x18, 0x01 }, 1);
-    try testing.expectEqual(@as(u64, 1), h.arg);
-    try testing.expect(!h.hasPreferredArgument());
-    try testing.expect((try parse(&.{0xff}, 0)).isBreak());
+    try std.testing.expectEqual(@as(u64, 1), h.arg);
+    try std.testing.expect(!h.hasPreferredArgument());
+    try std.testing.expect((try parse(&.{0xff}, 0)).isBreak());
 }

@@ -6,7 +6,7 @@
 //! encoding (RFC 8949 Section 4.2.1). Duplicate map keys are always rejected
 //! using generic data model equivalence (RFC 8949 Section 5.6.1).
 //!
-//! Every allocation goes through `Decoder.allocator()`, which charges a budget
+//! Every allocation goes through `Decoder.allocator()`, which charges a cumulative budget
 //! and forwards to the caller's allocator. Results are owned by the caller and
 //! freed with the caller's allocator; on error, everything allocated by a
 //! runtime call has already been released.
@@ -32,7 +32,8 @@ pub const Limits = struct {
     max_items: u64 = 1 << 20,
     /// Maximum length of one byte or text string, summed over chunks.
     max_string_bytes: u64 = 16 << 20,
-    /// Maximum live bytes allocated through `Decoder.allocator()`.
+    /// Maximum cumulative bytes allocated through `Decoder.allocator()` during one
+    /// decode. Frees and shrinks do not refund the budget.
     max_allocation_bytes: u64 = 64 << 20,
     /// Maximum work units: bytes examined plus map-key sorting and canonicalization cost.
     max_work: u64 = 1 << 28,
@@ -223,8 +224,8 @@ pub const Decoder = struct {
     }
 
     /// Budgeted allocator for decoded storage. Memory it returns may be freed
-    /// with the caller's allocator after decoding; freeing through this
-    /// allocator during decoding returns the bytes to the budget.
+    /// with the caller's allocator after decoding. The budget is cumulative:
+    /// freeing or shrinking through this allocator never refunds it.
     pub fn allocator(d: *Decoder) Allocator {
         return .{ .ptr = d, .vtable = &budget_vtable };
     }
@@ -866,7 +867,9 @@ pub const Decoder = struct {
         return list.toOwnedSlice(alloc) catch return d.allocationFailure();
     }
 
-    // Allocation budget
+    // Allocation budget. Charges are cumulative because the backing allocator
+    // may ignore frees and shrinks (an arena does), so only a request the
+    // backing allocator rejects is refunded.
 
     fn reserve(d: *Decoder, n: usize) bool {
         const next = std.math.add(usize, d.allocated, n) catch {
@@ -881,8 +884,8 @@ pub const Decoder = struct {
         return true;
     }
 
-    fn release(d: *Decoder, n: usize) void {
-        d.allocated -|= n;
+    fn refundRejected(d: *Decoder, n: usize) void {
+        d.allocated -= n;
     }
 
     const budget_vtable: Allocator.VTable = .{
@@ -896,44 +899,35 @@ pub const Decoder = struct {
         const d: *Decoder = @ptrCast(@alignCast(ctx));
         if (!d.reserve(len)) return null;
         return d.gpa.rawAlloc(len, alignment, ret_addr) orelse {
-            d.release(len);
+            d.refundRejected(len);
             return null;
         };
     }
 
     fn budgetResize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
         const d: *Decoder = @ptrCast(@alignCast(ctx));
-        if (new_len > memory.len) {
-            const extra = new_len - memory.len;
-            if (!d.reserve(extra)) return false;
-            if (d.gpa.rawResize(memory, alignment, new_len, ret_addr)) return true;
-            d.release(extra);
-            return false;
-        }
-        if (!d.gpa.rawResize(memory, alignment, new_len, ret_addr)) return false;
-        d.release(memory.len - new_len);
-        return true;
+        if (new_len <= memory.len) return d.gpa.rawResize(memory, alignment, new_len, ret_addr);
+        const extra = new_len - memory.len;
+        if (!d.reserve(extra)) return false;
+        if (d.gpa.rawResize(memory, alignment, new_len, ret_addr)) return true;
+        d.refundRejected(extra);
+        return false;
     }
 
     fn budgetRemap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
         const d: *Decoder = @ptrCast(@alignCast(ctx));
-        if (new_len > memory.len) {
-            const extra = new_len - memory.len;
-            if (!d.reserve(extra)) return null;
-            return d.gpa.rawRemap(memory, alignment, new_len, ret_addr) orelse {
-                d.release(extra);
-                return null;
-            };
-        }
-        const result = d.gpa.rawRemap(memory, alignment, new_len, ret_addr) orelse return null;
-        d.release(memory.len - new_len);
-        return result;
+        if (new_len <= memory.len) return d.gpa.rawRemap(memory, alignment, new_len, ret_addr);
+        const extra = new_len - memory.len;
+        if (!d.reserve(extra)) return null;
+        return d.gpa.rawRemap(memory, alignment, new_len, ret_addr) orelse {
+            d.refundRejected(extra);
+            return null;
+        };
     }
 
     fn budgetFree(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
         const d: *Decoder = @ptrCast(@alignCast(ctx));
         d.gpa.rawFree(memory, alignment, ret_addr);
-        d.release(memory.len);
     }
 };
 
@@ -954,29 +948,6 @@ pub fn validate(gpa: Allocator, input: []const u8, options: DecodeOptions) Decod
     try d.finish();
 }
 
-const testing = std.testing;
-
-fn decodeAll(d: *Decoder) DecodeError!void {
-    const value = try d.readValue();
-    defer value.deinit(d.gpa);
-    try d.finish();
-}
-
-const ErrorCase = struct {
-    bytes: []const u8,
-    err: DecodeError,
-    offset: usize,
-};
-
-fn expectErrorCases(cases: []const ErrorCase, options: DecodeOptions) !void {
-    for (cases) |c| {
-        var d = Decoder.init(testing.allocator, c.bytes, options);
-        try testing.expectError(c.err, decodeAll(&d));
-        try testing.expectEqual(c.offset, d.error_offset);
-        try testing.expectError(c.err, validate(testing.allocator, c.bytes, options));
-    }
-}
-
 test "integers cover the full CBOR domain" {
     const cases = [_]struct { bytes: []const u8, value: i65 }{
         .{ .bytes = &.{0x00}, .value = 0 },
@@ -991,24 +962,24 @@ test "integers cover the full CBOR domain" {
         .{ .bytes = &.{ 0x3b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff }, .value = -18446744073709551616 },
     };
     for (cases) |c| {
-        const value = try decodeValue(testing.allocator, c.bytes, .{});
-        try testing.expectEqual(c.value, value.integer);
-        var d = Decoder.init(testing.allocator, c.bytes, .{});
-        try testing.expectEqual(c.value, try d.readInt());
+        const value = try decodeValue(std.testing.allocator, c.bytes, .{});
+        try std.testing.expectEqual(c.value, value.integer);
+        var d = Decoder.init(std.testing.allocator, c.bytes, .{});
+        try std.testing.expectEqual(c.value, try d.readInt());
         try d.finish();
     }
-    var d = Decoder.init(testing.allocator, &.{ 0x3b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff }, .{});
-    try testing.expectError(error.TypeMismatch, d.readUint());
-    try testing.expectEqual(@as(u64, maxInt(u64)), try d.readNegative());
+    var d = Decoder.init(std.testing.allocator, &.{ 0x3b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff }, .{});
+    try std.testing.expectError(error.TypeMismatch, d.readUint());
+    try std.testing.expectEqual(@as(u64, maxInt(u64)), try d.readNegative());
 }
 
 test "readIntAs checks the target range without consuming" {
-    var d = Decoder.init(testing.allocator, &.{ 0x19, 0x01, 0x00, 0x38, 0x80 }, .{});
-    try testing.expectError(error.IntegerOutOfRange, d.readIntAs(u8));
-    try testing.expectEqual(@as(u16, 256), try d.readIntAs(u16));
-    try testing.expectError(error.IntegerOutOfRange, d.readIntAs(i8));
-    try testing.expectError(error.IntegerOutOfRange, d.readIntAs(u64));
-    try testing.expectEqual(@as(i16, -129), try d.readIntAs(i16));
+    var d = Decoder.init(std.testing.allocator, &.{ 0x19, 0x01, 0x00, 0x38, 0x80 }, .{});
+    try std.testing.expectError(error.IntegerOutOfRange, d.readIntAs(u8));
+    try std.testing.expectEqual(@as(u16, 256), try d.readIntAs(u16));
+    try std.testing.expectError(error.IntegerOutOfRange, d.readIntAs(i8));
+    try std.testing.expectError(error.IntegerOutOfRange, d.readIntAs(u64));
+    try std.testing.expectEqual(@as(i16, -129), try d.readIntAs(i16));
     try d.finish();
 }
 
@@ -1026,59 +997,80 @@ test "floats of every width decode bit-exactly" {
         .{ .bytes = &.{ 0xfb, 0x3f, 0xf1, 0x99, 0x99, 0x99, 0x99, 0x99, 0x9a }, .width = .double, .bits = 0x3ff1_9999_9999_999a },
     };
     for (cases) |c| {
-        var d = Decoder.init(testing.allocator, c.bytes, .{});
+        var d = Decoder.init(std.testing.allocator, c.bytes, .{});
         const f = try d.readFloatWidth();
-        try testing.expectEqual(c.width, f.width);
-        try testing.expectEqual(c.bits, @as(u64, @bitCast(f.value)));
+        try std.testing.expectEqual(c.width, f.width);
+        try std.testing.expectEqual(c.bits, @as(u64, @bitCast(f.value)));
         try d.finish();
     }
 }
 
 test "indefinite strings and containers" {
-    const gpa = testing.allocator;
+    const gpa = std.testing.allocator;
     {
         const input = [_]u8{ 0x5f, 0x42, 0x01, 0x02, 0x43, 0x03, 0x04, 0x05, 0xff };
         var d = Decoder.init(gpa, &input, .{});
         const s = try d.readBytesRef();
         defer s.deinit(gpa);
-        try testing.expect(s.owned);
-        try testing.expectEqualSlices(u8, &.{ 1, 2, 3, 4, 5 }, s.bytes);
+        try std.testing.expect(s.owned);
+        try std.testing.expectEqualSlices(u8, &.{ 1, 2, 3, 4, 5 }, s.bytes);
         try d.finish();
     }
     {
         const value = try decodeValue(gpa, "\x7f\x65strea\x64ming\xff", .{});
         defer value.deinit(gpa);
-        try testing.expectEqualStrings("streaming", value.text);
+        try std.testing.expectEqualStrings("streaming", value.text);
     }
     {
         const input: []const u8 = "\x64abcd";
         var d = Decoder.init(gpa, input, .{});
         const s = try d.readTextRef();
-        try testing.expect(!s.owned);
-        try testing.expectEqual(input.ptr + 1, s.bytes.ptr);
+        try std.testing.expect(!s.owned);
+        try std.testing.expectEqual(input.ptr + 1, s.bytes.ptr);
     }
     {
         const value = try decodeValue(gpa, &.{ 0x5f, 0xff }, .{});
         defer value.deinit(gpa);
-        try testing.expectEqual(@as(usize, 0), value.bytes.len);
+        try std.testing.expectEqual(@as(usize, 0), value.bytes.len);
     }
     {
         const value = try decodeValue(gpa, &.{ 0x9f, 0x01, 0x82, 0x02, 0x03, 0x9f, 0x04, 0x05, 0xff, 0xff }, .{});
         defer value.deinit(gpa);
-        try testing.expectEqual(@as(usize, 3), value.array.len);
-        try testing.expectEqual(@as(i65, 5), value.array[2].array[1].integer);
+        try std.testing.expectEqual(@as(usize, 3), value.array.len);
+        try std.testing.expectEqual(@as(i65, 5), value.array[2].array[1].integer);
     }
     {
         const value = try decodeValue(gpa, &.{ 0xbf, 0x61, 'a', 0x01, 0x61, 'b', 0x9f, 0x02, 0x03, 0xff, 0xff }, .{});
         defer value.deinit(gpa);
-        try testing.expectEqual(@as(usize, 2), value.map.len);
-        try testing.expectEqualStrings("b", value.map[1].key.text);
-        try testing.expectEqual(@as(i65, 3), value.map[1].value.array[1].integer);
+        try std.testing.expectEqual(@as(usize, 2), value.map.len);
+        try std.testing.expectEqualStrings("b", value.map[1].key.text);
+        try std.testing.expectEqual(@as(i65, 3), value.map[1].value.array[1].integer);
     }
 }
 
-test "malformed and invalid input is rejected with its offset" {
-    try expectErrorCases(&.{
+test "malformed, nondeterministic, and over-limit input is rejected with its offset" {
+    const Rejection = struct {
+        bytes: []const u8,
+        err: DecodeError,
+        offset: usize,
+
+        fn expectAll(rejections: []const @This(), options: DecodeOptions) !void {
+            for (rejections) |c| {
+                var d = Decoder.init(std.testing.allocator, c.bytes, options);
+                try std.testing.expectError(c.err, decodeAll(&d));
+                try std.testing.expectEqual(c.offset, d.error_offset);
+                try std.testing.expectError(c.err, validate(std.testing.allocator, c.bytes, options));
+            }
+        }
+
+        fn decodeAll(d: *Decoder) DecodeError!void {
+            const value = try d.readValue();
+            defer value.deinit(d.gpa);
+            try d.finish();
+        }
+    };
+
+    try Rejection.expectAll(&.{
         .{ .bytes = &.{}, .err = error.UnexpectedEndOfInput, .offset = 0 },
         .{ .bytes = &.{0x18}, .err = error.UnexpectedEndOfInput, .offset = 0 },
         .{ .bytes = &.{ 0x1a, 0x01, 0x02 }, .err = error.UnexpectedEndOfInput, .offset = 0 },
@@ -1112,22 +1104,9 @@ test "malformed and invalid input is rejected with its offset" {
         .{ .bytes = &.{ 0xa2, 0xa1, 0x01, 0x02, 0x00, 0xbf, 0x01, 0x02, 0xff, 0x00 }, .err = error.DuplicateMapKey, .offset = 0 },
         .{ .bytes = &.{ 0xa1, 0xa2, 0x01, 0x00, 0x01, 0x00, 0x00 }, .err = error.DuplicateMapKey, .offset = 1 },
     }, .{});
-}
 
-test "distinct keys of different types are not duplicates" {
-    const inputs = [_][]const u8{
-        &.{ 0xa2, 0x01, 0x00, 0xf9, 0x3c, 0x00, 0x00 },
-        &.{ 0xa2, 0x41, 'a', 0x00, 0x61, 'a', 0x00 },
-        &.{ 0xa2, 0x02, 0x00, 0xc2, 0x41, 0x02, 0x00 },
-        &.{ 0xa2, 0xf4, 0x00, 0x00, 0x00 },
-        &.{ 0xa2, 0xf9, 0x7e, 0x00, 0x00, 0xf9, 0x7e, 0x01, 0x00 },
-    };
-    for (inputs) |input| try validate(testing.allocator, input, .{});
-}
-
-test "deterministic input is optional and enforced on request" {
     const deterministic: DecodeOptions = .{ .require_deterministic = true };
-    const cases = [_]ErrorCase{
+    const cases = [_]Rejection{
         .{ .bytes = &.{ 0x18, 0x17 }, .err = error.NonPreferredArgument, .offset = 0 },
         .{ .bytes = &.{ 0x19, 0x00, 0xff }, .err = error.NonPreferredArgument, .offset = 0 },
         .{ .bytes = &.{ 0x1a, 0x00, 0x00, 0xff, 0xff }, .err = error.NonPreferredArgument, .offset = 0 },
@@ -1147,10 +1126,10 @@ test "deterministic input is optional and enforced on request" {
         .{ .bytes = &.{ 0xa2, 0x61, 'b', 0x00, 0x61, 'a', 0x00 }, .err = error.UnsortedMapKeys, .offset = 4 },
         .{ .bytes = &.{ 0xa2, 0x61, 'a', 0x00, 0x02, 0x00 }, .err = error.UnsortedMapKeys, .offset = 4 },
     };
-    for (cases) |c| try validate(testing.allocator, c.bytes, .{});
-    try expectErrorCases(&cases, deterministic);
+    for (cases) |c| try validate(std.testing.allocator, c.bytes, .{});
+    try Rejection.expectAll(&cases, deterministic);
 
-    try expectErrorCases(&.{
+    try Rejection.expectAll(&.{
         .{ .bytes = &.{ 0xa2, 0x01, 0x00, 0x01, 0x00 }, .err = error.DuplicateMapKey, .offset = 3 },
         .{ .bytes = &.{ 0xa2, 0xf9, 0x00, 0x00, 0x00, 0xf9, 0x80, 0x00, 0x00 }, .err = error.DuplicateMapKey, .offset = 0 },
     }, deterministic);
@@ -1163,45 +1142,86 @@ test "deterministic input is optional and enforced on request" {
         &.{ 0xf8, 0xff },
         &.{ 0xc1, 0x1a, 0x51, 0x4b, 0x67, 0xb0 },
     };
-    for (accepted) |input| try validate(testing.allocator, input, deterministic);
-}
+    for (accepted) |input| try validate(std.testing.allocator, input, deterministic);
 
-test "resource limits" {
-    const gpa = testing.allocator;
-    try expectErrorCases(&.{
+    const gpa = std.testing.allocator;
+    try Rejection.expectAll(&.{
         .{ .bytes = &.{ 0x81, 0x81, 0x81, 0x00 }, .err = error.DepthLimitExceeded, .offset = 2 },
         .{ .bytes = &.{ 0xc1, 0xc1, 0xc1, 0x00 }, .err = error.DepthLimitExceeded, .offset = 2 },
     }, .{ .limits = .{ .max_depth = 2 } });
     try validate(gpa, &.{ 0x81, 0x81, 0x81, 0x00 }, .{ .limits = .{ .max_depth = 3 } });
 
-    try expectErrorCases(&.{
+    try Rejection.expectAll(&.{
         .{ .bytes = &.{ 0x83, 0x01, 0x02, 0x03 }, .err = error.ItemLimitExceeded, .offset = 0 },
         .{ .bytes = &.{ 0x9f, 0x01, 0x02, 0x03, 0xff }, .err = error.ItemLimitExceeded, .offset = 3 },
     }, .{ .limits = .{ .max_items = 3 } });
     try validate(gpa, &.{ 0x83, 0x01, 0x02, 0x03 }, .{ .limits = .{ .max_items = 4 } });
 
-    try expectErrorCases(&.{
+    try Rejection.expectAll(&.{
         .{ .bytes = &.{ 0x43, 0x01, 0x02, 0x03 }, .err = error.StringLengthLimitExceeded, .offset = 0 },
         .{ .bytes = &.{ 0x5f, 0x42, 0x01, 0x02, 0x41, 0x03, 0xff }, .err = error.StringLengthLimitExceeded, .offset = 4 },
     }, .{ .limits = .{ .max_string_bytes = 2 } });
 
     const small_budget: DecodeOptions = .{ .limits = .{ .max_allocation_bytes = 2 } };
-    try testing.expectError(error.AllocationLimitExceeded, decodeValue(gpa, &.{ 0x43, 0x01, 0x02, 0x03 }, small_budget));
+    try std.testing.expectError(error.AllocationLimitExceeded, decodeValue(gpa, &.{ 0x43, 0x01, 0x02, 0x03 }, small_budget));
     try validate(gpa, &.{ 0x43, 0x01, 0x02, 0x03 }, small_budget);
 
-    try testing.expectError(error.WorkLimitExceeded, validate(gpa, &.{ 0x82, 0x01, 0x02 }, .{ .limits = .{ .max_work = 2 } }));
+    try std.testing.expectError(error.WorkLimitExceeded, validate(gpa, &.{ 0x82, 0x01, 0x02 }, .{ .limits = .{ .max_work = 2 } }));
     try validate(gpa, &.{ 0x82, 0x01, 0x02 }, .{ .limits = .{ .max_work = 3 } });
 }
 
-test "small maps track keys without allocating" {
-    try validate(testing.failing_allocator, &.{ 0xa2, 0x01, 0x00, 0x02, 0x00 }, .{});
+test "allocation budget is cumulative across frees and shrinks" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var d = Decoder.init(arena.allocator(), &.{}, .{ .limits = .{ .max_allocation_bytes = 8 } });
+    const budgeted = d.allocator();
+
+    const block = try budgeted.alloc(u8, 4);
+    const kept: usize = if (budgeted.resize(block, 1)) 1 else block.len;
+    budgeted.free(block[0..kept]);
+    try std.testing.expectEqual(@as(usize, 4), d.allocated);
+
+    budgeted.free(try budgeted.alloc(u8, 4));
+    try std.testing.expectEqual(@as(usize, 8), d.allocated);
+    try std.testing.expectError(error.OutOfMemory, budgeted.alloc(u8, 1));
+    try std.testing.expect(d.allocationFailure() == error.AllocationLimitExceeded);
+    try std.testing.expectEqual(@as(usize, 8), d.allocated);
+}
+
+test "allocation budget spans every map in one decode" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
     const nine = [_]u8{ 0xa9, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04, 0x00, 0x05, 0x00, 0x06, 0x00, 0x07, 0x00, 0x08, 0x00, 0x09, 0x00 };
-    try testing.expectError(error.OutOfMemory, validate(testing.failing_allocator, &nine, .{}));
-    try validate(testing.allocator, &nine, .{});
+    var probe = Decoder.init(arena.allocator(), &nine, .{});
+    try probe.skip();
+    try probe.finish();
+    try std.testing.expect(probe.allocated > 0);
+
+    const one_map: DecodeOptions = .{ .limits = .{ .max_allocation_bytes = probe.allocated } };
+    try validate(arena.allocator(), &nine, one_map);
+    try std.testing.expectError(error.AllocationLimitExceeded, validate(arena.allocator(), &([_]u8{0x82} ++ nine ++ nine), one_map));
+}
+
+test "distinct keys of different types are not duplicates" {
+    const inputs = [_][]const u8{
+        &.{ 0xa2, 0x01, 0x00, 0xf9, 0x3c, 0x00, 0x00 },
+        &.{ 0xa2, 0x41, 'a', 0x00, 0x61, 'a', 0x00 },
+        &.{ 0xa2, 0x02, 0x00, 0xc2, 0x41, 0x02, 0x00 },
+        &.{ 0xa2, 0xf4, 0x00, 0x00, 0x00 },
+        &.{ 0xa2, 0xf9, 0x7e, 0x00, 0x00, 0xf9, 0x7e, 0x01, 0x00 },
+    };
+    for (inputs) |input| try validate(std.testing.allocator, input, .{});
+}
+
+test "small maps track keys without allocating" {
+    try validate(std.testing.failing_allocator, &.{ 0xa2, 0x01, 0x00, 0x02, 0x00 }, .{});
+    const nine = [_]u8{ 0xa9, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04, 0x00, 0x05, 0x00, 0x06, 0x00, 0x07, 0x00, 0x08, 0x00, 0x09, 0x00 };
+    try std.testing.expectError(error.OutOfMemory, validate(std.testing.failing_allocator, &nine, .{}));
+    try validate(std.testing.allocator, &nine, .{});
 }
 
 test "map pull API matches keys and re-reads typed keys" {
-    const gpa = testing.allocator;
+    const gpa = std.testing.allocator;
     var d = Decoder.init(gpa, "\xa3\x64name\x61x\x01\x02\x7f\x61i\x61d\xff\x18\x07", .{});
     var m = try d.beginMap();
     defer m.deinit(&d);
@@ -1217,8 +1237,8 @@ test "map pull API matches keys and re-reads typed keys" {
             d.rereadKey(key);
             const text = try d.readTextRef();
             defer text.deinit(d.allocator());
-            try testing.expect(text.owned);
-            try testing.expectEqualStrings("id", text.bytes);
+            try std.testing.expect(text.owned);
+            try std.testing.expectEqualStrings("id", text.bytes);
             id = try d.readUint();
         } else {
             return error.UnexpectedMapKey;
@@ -1226,53 +1246,54 @@ test "map pull API matches keys and re-reads typed keys" {
     }
     try d.endMap(&m);
     try d.finish();
-    try testing.expectEqualStrings("x", name.?.bytes);
-    try testing.expectEqual(@as(?u64, 2), one);
-    try testing.expectEqual(@as(?u64, 7), id);
-    try testing.expectEqual(@as(u64, 7), d.items);
-    try testing.expectEqual(@as(usize, 0), d.allocated);
+    try std.testing.expectEqualStrings("x", name.?.bytes);
+    try std.testing.expectEqual(@as(?u64, 2), one);
+    try std.testing.expectEqual(@as(?u64, 7), id);
+    try std.testing.expectEqual(@as(u64, 7), d.items);
 }
 
 test "array pull API reports length mismatches" {
-    var d = Decoder.init(testing.allocator, &.{ 0x83, 0x01, 0x02, 0x03 }, .{});
+    var d = Decoder.init(std.testing.allocator, &.{ 0x83, 0x01, 0x02, 0x03 }, .{});
     var a = try d.beginArray();
-    try testing.expectEqual(@as(?u64, 3), a.count);
+    try std.testing.expectEqual(@as(?u64, 3), a.count);
     _ = try d.nextArrayItem(&a);
     _ = try d.readUint();
-    try testing.expectError(error.LengthMismatch, d.endArray(&a));
+    try std.testing.expectError(error.LengthMismatch, d.endArray(&a));
 
-    d = Decoder.init(testing.allocator, &.{ 0x9f, 0x01, 0x02, 0xff }, .{});
+    d = Decoder.init(std.testing.allocator, &.{ 0x9f, 0x01, 0x02, 0xff }, .{});
     a = try d.beginArray();
     var sum: u64 = 0;
     while (!try d.arrayAtEnd(&a)) {
-        try testing.expect(try d.nextArrayItem(&a));
+        try std.testing.expect(try d.nextArrayItem(&a));
         sum += try d.readUint();
     }
     try d.endArray(&a);
     try d.finish();
-    try testing.expectEqual(@as(u64, 3), sum);
+    try std.testing.expectEqual(@as(u64, 3), sum);
 }
 
 test "checkpoints support backtracking" {
-    var d = Decoder.init(testing.allocator, &.{ 0x82, 0x61, 'a', 0x01 }, .{});
+    var d = Decoder.init(std.testing.allocator, &.{ 0x82, 0x61, 'a', 0x01 }, .{});
     const cp = d.save();
     var a = try d.beginArray();
-    try testing.expect(try d.nextArrayItem(&a));
-    try testing.expectError(error.TypeMismatch, d.readInt());
-    try testing.expectEqual(Kind.text, try d.peekKind());
+    try std.testing.expect(try d.nextArrayItem(&a));
+    try std.testing.expectError(error.TypeMismatch, d.readInt());
+    try std.testing.expectEqual(Kind.text, try d.peekKind());
     d.restore(cp);
-    try testing.expectEqual(@as(u32, 0), d.depth);
-    try testing.expectEqual(@as(u64, 0), d.items);
+    try std.testing.expectEqual(@as(u32, 0), d.depth);
+    try std.testing.expectEqual(@as(u64, 0), d.items);
     try d.skip();
     try d.finish();
 }
 
-fn decodeAndFree(gpa: Allocator, input: []const u8) !void {
-    const value = try decodeValue(gpa, input, .{});
-    value.deinit(gpa);
-}
-
 test "decoding releases every allocation on failure" {
+    const Roundtrip = struct {
+        fn decodeAndFree(gpa: Allocator, bytes: []const u8) !void {
+            const value = try decodeValue(gpa, bytes, .{});
+            value.deinit(gpa);
+        }
+    };
+
     const input = [_]u8{
         0xbf,
         0x61,
@@ -1307,5 +1328,5 @@ test "decoding releases every allocation on failure" {
         0x80,
         0xff,
     };
-    try testing.checkAllAllocationFailures(testing.allocator, decodeAndFree, .{@as([]const u8, &input)});
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Roundtrip.decodeAndFree, .{@as([]const u8, &input)});
 }

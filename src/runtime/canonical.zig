@@ -73,22 +73,20 @@ fn item(bytes: []const u8, pos: *usize, depth: u32) bool {
     }
 }
 
-const testing = std.testing;
-
 test "equivalence form recognition" {
-    try testing.expect(isKeyCanonical(&.{0x01}));
-    try testing.expect(isKeyCanonical(&.{ 0x62, 'a', 'b' }));
-    try testing.expect(isKeyCanonical(&.{ 0xa2, 0x01, 0x02, 0x03, 0x04 }));
-    try testing.expect(isKeyCanonical(&.{ 0xf9, 0x00, 0x00 }));
-    try testing.expect(isKeyCanonical(&.{ 0xf9, 0x7e, 0x00 }));
-    try testing.expect(isKeyCanonical(&.{ 0xc1, 0x1a, 0x51, 0x4b, 0x67, 0xb0 }));
+    try std.testing.expect(isKeyCanonical(&.{0x01}));
+    try std.testing.expect(isKeyCanonical(&.{ 0x62, 'a', 'b' }));
+    try std.testing.expect(isKeyCanonical(&.{ 0xa2, 0x01, 0x02, 0x03, 0x04 }));
+    try std.testing.expect(isKeyCanonical(&.{ 0xf9, 0x00, 0x00 }));
+    try std.testing.expect(isKeyCanonical(&.{ 0xf9, 0x7e, 0x00 }));
+    try std.testing.expect(isKeyCanonical(&.{ 0xc1, 0x1a, 0x51, 0x4b, 0x67, 0xb0 }));
 
-    try testing.expect(!isKeyCanonical(&.{ 0x18, 0x01 }));
-    try testing.expect(!isKeyCanonical(&.{ 0x7f, 0x61, 'a', 0xff }));
-    try testing.expect(!isKeyCanonical(&.{ 0xa2, 0x03, 0x04, 0x01, 0x02 }));
-    try testing.expect(!isKeyCanonical(&.{ 0xf9, 0x80, 0x00 }));
-    try testing.expect(!isKeyCanonical(&.{ 0xf9, 0xfe, 0x00 }));
-    try testing.expect(!isKeyCanonical(&.{ 0xfa, 0x3f, 0x80, 0x00, 0x00 }));
-    try testing.expect(!isKeyCanonical(&.{ 0x01, 0x02 }));
-    try testing.expect(!isKeyCanonical(&.{0x62}));
+    try std.testing.expect(!isKeyCanonical(&.{ 0x18, 0x01 }));
+    try std.testing.expect(!isKeyCanonical(&.{ 0x7f, 0x61, 'a', 0xff }));
+    try std.testing.expect(!isKeyCanonical(&.{ 0xa2, 0x03, 0x04, 0x01, 0x02 }));
+    try std.testing.expect(!isKeyCanonical(&.{ 0xf9, 0x80, 0x00 }));
+    try std.testing.expect(!isKeyCanonical(&.{ 0xf9, 0xfe, 0x00 }));
+    try std.testing.expect(!isKeyCanonical(&.{ 0xfa, 0x3f, 0x80, 0x00, 0x00 }));
+    try std.testing.expect(!isKeyCanonical(&.{ 0x01, 0x02 }));
+    try std.testing.expect(!isKeyCanonical(&.{0x62}));
 }

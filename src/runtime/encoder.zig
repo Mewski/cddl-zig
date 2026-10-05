@@ -398,16 +398,16 @@ pub fn encodeValueAlloc(gpa: Allocator, value: Value) EncodeError![]u8 {
     return list.toOwnedSlice(gpa);
 }
 
-const testing = std.testing;
+test "values encode in core deterministic form" {
+    const Expect = struct {
+        fn encoding(expected: []const u8, value: Value) !void {
+            const bytes = try encodeValueAlloc(std.testing.allocator, value);
+            defer std.testing.allocator.free(bytes);
+            try std.testing.expectEqualSlices(u8, expected, bytes);
+        }
+    };
 
-fn expectValueEncoding(expected: []const u8, value: Value) !void {
-    const bytes = try encodeValueAlloc(testing.allocator, value);
-    defer testing.allocator.free(bytes);
-    try testing.expectEqualSlices(u8, expected, bytes);
-}
-
-test "integers use the shortest argument" {
-    const cases = [_]struct { value: i65, bytes: []const u8 }{
+    const integers = [_]struct { value: i65, bytes: []const u8 }{
         .{ .value = 0, .bytes = &.{0x00} },
         .{ .value = 23, .bytes = &.{0x17} },
         .{ .value = 24, .bytes = &.{ 0x18, 0x18 } },
@@ -423,11 +423,9 @@ test "integers use the shortest argument" {
         .{ .value = -25, .bytes = &.{ 0x38, 0x18 } },
         .{ .value = -18446744073709551616, .bytes = &.{ 0x3b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff } },
     };
-    for (cases) |c| try expectValueEncoding(c.bytes, .{ .integer = c.value });
-}
+    for (integers) |c| try Expect.encoding(c.bytes, .{ .integer = c.value });
 
-test "floats use the shortest exact width" {
-    const cases = [_]struct { value: f64, bytes: []const u8 }{
+    const floats = [_]struct { value: f64, bytes: []const u8 }{
         .{ .value = 0.0, .bytes = &.{ 0xf9, 0x00, 0x00 } },
         .{ .value = -0.0, .bytes = &.{ 0xf9, 0x80, 0x00 } },
         .{ .value = 1.0, .bytes = &.{ 0xf9, 0x3c, 0x00 } },
@@ -442,36 +440,21 @@ test "floats use the shortest exact width" {
         .{ .value = -std.math.inf(f64), .bytes = &.{ 0xf9, 0xfc, 0x00 } },
         .{ .value = std.math.nan(f64), .bytes = &.{ 0xf9, 0x7e, 0x00 } },
     };
-    for (cases) |c| try expectValueEncoding(c.bytes, .{ .float = c.value });
+    for (floats) |c| try Expect.encoding(c.bytes, .{ .float = c.value });
 
-    var buf: [9]u8 = undefined;
-    var e = Encoder.initFixed(&buf);
-    try e.writeFloat32(1.0);
-    try testing.expectEqualSlices(u8, &.{ 0xfa, 0x3f, 0x80, 0x00, 0x00 }, buf[0..e.len]);
-}
-
-test "scalars, strings, and tags" {
-    try expectValueEncoding(&.{0xf4}, .{ .boolean = false });
-    try expectValueEncoding(&.{0xf5}, .{ .boolean = true });
-    try expectValueEncoding(&.{0xf6}, .null);
-    try expectValueEncoding(&.{0xf7}, .undefined);
-    try expectValueEncoding(&.{0xf0}, .{ .simple = 16 });
-    try expectValueEncoding(&.{ 0xf8, 0xff }, .{ .simple = 255 });
-    try expectValueEncoding(&.{0x40}, .{ .bytes = "" });
-    try expectValueEncoding("\x64IETF", .{ .text = "IETF" });
-    try expectValueEncoding("\x78\x18abcdefghijklmnopqrstuvwx", .{ .text = "abcdefghijklmnopqrstuvwx" });
+    try Expect.encoding(&.{0xf4}, .{ .boolean = false });
+    try Expect.encoding(&.{0xf5}, .{ .boolean = true });
+    try Expect.encoding(&.{0xf6}, .null);
+    try Expect.encoding(&.{0xf7}, .undefined);
+    try Expect.encoding(&.{0xf0}, .{ .simple = 16 });
+    try Expect.encoding(&.{ 0xf8, 0xff }, .{ .simple = 255 });
+    try Expect.encoding(&.{0x40}, .{ .bytes = "" });
+    try Expect.encoding("\x64IETF", .{ .text = "IETF" });
+    try Expect.encoding("\x78\x18abcdefghijklmnopqrstuvwx", .{ .text = "abcdefghijklmnopqrstuvwx" });
     var content: Value = .{ .integer = 1363896240 };
-    try expectValueEncoding(&.{ 0xc1, 0x1a, 0x51, 0x4b, 0x67, 0xb0 }, .{ .tag = .{ .number = 1, .content = &content } });
+    try Expect.encoding(&.{ 0xc1, 0x1a, 0x51, 0x4b, 0x67, 0xb0 }, .{ .tag = .{ .number = 1, .content = &content } });
 
-    var buf: [4]u8 = undefined;
-    var e = Encoder.initFixed(&buf);
-    try testing.expectError(error.InvalidUtf8, e.writeText("\xc3\x28"));
-    try testing.expectError(error.InvalidSimpleValue, e.writeSimple(24));
-    try testing.expectError(error.InvalidSimpleValue, e.writeSimple(31));
-    try testing.expectEqual(@as(usize, 0), e.len);
-}
-
-test "map keys are sorted bytewise by encoding" {
+    // Map keys are sorted bytewise by their encodings.
     var one = [_]Value{.{ .integer = 1 }};
     var entries = [_]Value.Entry{
         .{ .key = .{ .text = "aa" }, .value = .{ .integer = 0 } },
@@ -482,7 +465,7 @@ test "map keys are sorted bytewise by encoding" {
         .{ .key = .{ .integer = -1 }, .value = .{ .integer = 0 } },
         .{ .key = .{ .integer = 10 }, .value = .{ .integer = 0 } },
     };
-    try expectValueEncoding(&.{
+    try Expect.encoding(&.{
         0xa7,
         0x0a,
         0x00,
@@ -504,6 +487,27 @@ test "map keys are sorted bytewise by encoding" {
         0xf4,
         0x00,
     }, .{ .map = &entries });
+
+    // Keys that differ in the data model are distinct even when numerically equal.
+    var distinct = [_]Value.Entry{
+        .{ .key = .{ .float = -0.0 }, .value = .null },
+        .{ .key = .{ .integer = 0 }, .value = .null },
+    };
+    try Expect.encoding(&.{ 0xa2, 0x00, 0xf6, 0xf9, 0x80, 0x00, 0xf6 }, .{ .map = &distinct });
+}
+
+test "direct writes keep explicit widths and reject invalid items" {
+    var wide_buf: [9]u8 = undefined;
+    var wide = Encoder.initFixed(&wide_buf);
+    try wide.writeFloat32(1.0);
+    try std.testing.expectEqualSlices(u8, &.{ 0xfa, 0x3f, 0x80, 0x00, 0x00 }, wide_buf[0..wide.len]);
+
+    var invalid_buf: [4]u8 = undefined;
+    var invalid = Encoder.initFixed(&invalid_buf);
+    try std.testing.expectError(error.InvalidUtf8, invalid.writeText("\xc3\x28"));
+    try std.testing.expectError(error.InvalidSimpleValue, invalid.writeSimple(24));
+    try std.testing.expectError(error.InvalidSimpleValue, invalid.writeSimple(31));
+    try std.testing.expectEqual(@as(usize, 0), invalid.len);
 }
 
 test "equivalent map keys are rejected" {
@@ -511,60 +515,54 @@ test "equivalent map keys are rejected" {
         .{ .key = .{ .integer = 1 }, .value = .null },
         .{ .key = .{ .integer = 1 }, .value = .undefined },
     };
-    try testing.expectError(error.DuplicateMapKey, encodeValueAlloc(testing.allocator, .{ .map = &ints }));
+    try std.testing.expectError(error.DuplicateMapKey, encodeValueAlloc(std.testing.allocator, .{ .map = &ints }));
 
     var zeros = [_]Value.Entry{
         .{ .key = .{ .float = 0.0 }, .value = .null },
         .{ .key = .{ .float = 1.0 }, .value = .null },
         .{ .key = .{ .float = -0.0 }, .value = .null },
     };
-    try testing.expectError(error.DuplicateMapKey, encodeValueAlloc(testing.allocator, .{ .map = &zeros }));
+    try std.testing.expectError(error.DuplicateMapKey, encodeValueAlloc(std.testing.allocator, .{ .map = &zeros }));
 
     var nans = [_]Value.Entry{
         .{ .key = .{ .float = @bitCast(@as(u64, 0x7ff8_0000_0000_0000)) }, .value = .null },
         .{ .key = .{ .float = @bitCast(@as(u64, 0xfff8_0000_0000_0000)) }, .value = .null },
     };
-    try testing.expectError(error.DuplicateMapKey, encodeValueAlloc(testing.allocator, .{ .map = &nans }));
-
-    var distinct = [_]Value.Entry{
-        .{ .key = .{ .float = -0.0 }, .value = .null },
-        .{ .key = .{ .integer = 0 }, .value = .null },
-    };
-    try expectValueEncoding(&.{ 0xa2, 0x00, 0xf6, 0xf9, 0x80, 0x00, 0xf6 }, .{ .map = &distinct });
+    try std.testing.expectError(error.DuplicateMapKey, encodeValueAlloc(std.testing.allocator, .{ .map = &nans }));
 }
 
 test "output sinks report capacity failures" {
     var small: [2]u8 = undefined;
     var e = Encoder.initFixed(&small);
-    try testing.expectError(error.OutputCapacityExceeded, e.writeUint(256));
-    try testing.expectEqual(@as(usize, 0), e.len);
+    try std.testing.expectError(error.OutputCapacityExceeded, e.writeUint(256));
+    try std.testing.expectEqual(@as(usize, 0), e.len);
     try e.writeUint(24);
-    try testing.expectEqualSlices(u8, &.{ 0x18, 0x18 }, small[0..e.len]);
+    try std.testing.expectEqualSlices(u8, &.{ 0x18, 0x18 }, small[0..e.len]);
 
     var buf: [3]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
     var we = Encoder.initWriter(&w);
     try we.writeUint(256);
-    try testing.expectEqualSlices(u8, &.{ 0x19, 0x01, 0x00 }, w.buffered());
-    try testing.expectError(error.WriteFailed, we.writeUint(0));
+    try std.testing.expectEqualSlices(u8, &.{ 0x19, 0x01, 0x00 }, w.buffered());
+    try std.testing.expectError(error.WriteFailed, we.writeUint(0));
 }
 
 test "nonpreferred input re-encodes deterministically" {
-    const gpa = testing.allocator;
+    const gpa = std.testing.allocator;
     const input = [_]u8{ 0xbf, 0x61, 'b', 0x18, 0x01, 0x7f, 0x61, 'a', 0xff, 0xfa, 0x3f, 0xc0, 0x00, 0x00, 0xff };
     const value = try decoder.decodeValue(gpa, &input, .{});
     defer value.deinit(gpa);
     const bytes = try encodeValueAlloc(gpa, value);
     defer gpa.free(bytes);
-    try testing.expectEqualSlices(u8, &.{ 0xa2, 0x61, 'a', 0xf9, 0x3e, 0x00, 0x61, 'b', 0x01 }, bytes);
+    try std.testing.expectEqualSlices(u8, &.{ 0xa2, 0x61, 'a', 0xf9, 0x3e, 0x00, 0x61, 'b', 0x01 }, bytes);
     try decoder.validate(gpa, bytes, .{ .require_deterministic = true });
     const again = try decoder.decodeValue(gpa, bytes, .{ .require_deterministic = true });
     defer again.deinit(gpa);
-    try testing.expect(value.eql(again));
+    try std.testing.expect(value.eql(again));
 }
 
 test "MapBuilder sorts runtime keys and rejects equivalent ones" {
-    const gpa = testing.allocator;
+    const gpa = std.testing.allocator;
     var b = MapBuilder.init(gpa);
     defer b.deinit();
     var ke = b.encoder();
@@ -583,7 +581,7 @@ test "MapBuilder sorts runtime keys and rejects equivalent ones" {
     var buf: [16]u8 = undefined;
     var out = Encoder.initFixed(&buf);
     try b.finish(&out);
-    try testing.expectEqualSlices(u8, &.{ 0xa3, 0x20, 0xf6, 0x61, 'a', 0x01, 0x61, 'b', 0x02 }, buf[0..out.len]);
+    try std.testing.expectEqualSlices(u8, &.{ 0xa3, 0x20, 0xf6, 0x61, 'a', 0x01, 0x61, 'b', 0x02 }, buf[0..out.len]);
 
     b.reset();
     try b.beginKey();
@@ -595,7 +593,7 @@ test "MapBuilder sorts runtime keys and rejects equivalent ones" {
     b.beginValue();
     try ke.writeNull();
     out = Encoder.initFixed(&buf);
-    try testing.expectError(error.DuplicateMapKey, b.finish(&out));
+    try std.testing.expectError(error.DuplicateMapKey, b.finish(&out));
 
     b.reset();
     try b.beginKey();
@@ -603,15 +601,17 @@ test "MapBuilder sorts runtime keys and rejects equivalent ones" {
     b.beginValue();
     try ke.writeNull();
     out = Encoder.initFixed(&buf);
-    try testing.expectError(error.InvalidEncodedItem, b.finish(&out));
-}
-
-fn encodeAndFree(gpa: Allocator, value: Value) !void {
-    const bytes = try encodeValueAlloc(gpa, value);
-    gpa.free(bytes);
+    try std.testing.expectError(error.InvalidEncodedItem, b.finish(&out));
 }
 
 test "encoding releases every allocation on failure" {
+    const Roundtrip = struct {
+        fn encodeAndFree(gpa: Allocator, value: Value) !void {
+            const bytes = try encodeValueAlloc(gpa, value);
+            gpa.free(bytes);
+        }
+    };
+
     var inner = [_]Value.Entry{
         .{ .key = .{ .float = -0.0 }, .value = .{ .text = "z" } },
         .{ .key = .{ .integer = 1 }, .value = .null },
@@ -622,5 +622,5 @@ test "encoding releases every allocation on failure" {
         .{ .key = .{ .map = &inner }, .value = .{ .bytes = "x" } },
         .{ .key = .{ .text = "a" }, .value = .{ .float = 1.5 } },
     };
-    try testing.checkAllAllocationFailures(testing.allocator, encodeAndFree, .{Value{ .map = &entries }});
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Roundtrip.encodeAndFree, .{Value{ .map = &entries }});
 }

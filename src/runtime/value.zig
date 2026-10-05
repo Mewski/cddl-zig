@@ -107,8 +107,6 @@ pub const Value = union(enum) {
     }
 };
 
-const testing = std.testing;
-
 test "data model equality" {
     var one: Value = .{ .integer = 1 };
     const a_entries = [_]Value.Entry{
@@ -121,11 +119,11 @@ test "data model equality" {
     };
     var a_buf = a_entries;
     var b_buf = b_entries;
-    try testing.expect((Value{ .map = &a_buf }).eql(.{ .map = &b_buf }));
-    try testing.expect((Value{ .simple = 20 }).eql(.{ .boolean = false }));
-    try testing.expect(!(Value{ .integer = 2 }).eql(.{ .simple = 2 }));
-    try testing.expect(!(Value{ .integer = 1 }).eql(.{ .float = 1.0 }));
-    try testing.expect(!(Value{ .bytes = "a" }).eql(.{ .text = "a" }));
-    try testing.expect((Value{ .tag = .{ .number = 2, .content = &one } }).eql(.{ .tag = .{ .number = 2, .content = &one } }));
-    try testing.expect(!(Value{ .tag = .{ .number = 3, .content = &one } }).eql(.{ .tag = .{ .number = 2, .content = &one } }));
+    try std.testing.expect((Value{ .map = &a_buf }).eql(.{ .map = &b_buf }));
+    try std.testing.expect((Value{ .simple = 20 }).eql(.{ .boolean = false }));
+    try std.testing.expect(!(Value{ .integer = 2 }).eql(.{ .simple = 2 }));
+    try std.testing.expect(!(Value{ .integer = 1 }).eql(.{ .float = 1.0 }));
+    try std.testing.expect(!(Value{ .bytes = "a" }).eql(.{ .text = "a" }));
+    try std.testing.expect((Value{ .tag = .{ .number = 2, .content = &one } }).eql(.{ .tag = .{ .number = 2, .content = &one } }));
+    try std.testing.expect(!(Value{ .tag = .{ .number = 3, .content = &one } }).eql(.{ .tag = .{ .number = 2, .content = &one } }));
 }

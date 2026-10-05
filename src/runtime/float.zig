@@ -132,50 +132,48 @@ pub fn eql(a: f64, b: f64) bool {
     return a == b;
 }
 
-const testing = std.testing;
+test "preferred serialization picks the shortest exact width and keeps NaN payloads" {
+    const Preferred = struct {
+        fn expect(x: f64, width: Width, bits: u64) !void {
+            const p = preferred(x);
+            try std.testing.expectEqual(width, p.width);
+            try std.testing.expectEqual(bits, p.bits);
+            try std.testing.expectEqual(@as(u64, @bitCast(x)), @as(u64, @bitCast(decode(p))));
+        }
+    };
 
-fn expectPreferred(x: f64, width: Width, bits: u64) !void {
-    const p = preferred(x);
-    try testing.expectEqual(width, p.width);
-    try testing.expectEqual(bits, p.bits);
-    try testing.expectEqual(@as(u64, @bitCast(x)), @as(u64, @bitCast(decode(p))));
-}
+    try Preferred.expect(0.0, .half, 0x0000);
+    try Preferred.expect(-0.0, .half, 0x8000);
+    try Preferred.expect(1.0, .half, 0x3c00);
+    try Preferred.expect(1.5, .half, 0x3e00);
+    try Preferred.expect(65504.0, .half, 0x7bff);
+    try Preferred.expect(5.960464477539063e-8, .half, 0x0001);
+    try Preferred.expect(0.00006103515625, .half, 0x0400);
+    try Preferred.expect(-4.0, .half, 0xc400);
+    try Preferred.expect(std.math.inf(f64), .half, 0x7c00);
+    try Preferred.expect(-std.math.inf(f64), .half, 0xfc00);
+    try Preferred.expect(100000.0, .single, 0x47c3_5000);
+    try Preferred.expect(3.4028234663852886e+38, .single, 0x7f7f_ffff);
+    try Preferred.expect(0x1p-149, .single, 0x0000_0001);
+    try Preferred.expect(0x1p-25, .single, 0x3300_0000);
+    try Preferred.expect(1.1, .double, 0x3ff1_9999_9999_999a);
+    try Preferred.expect(1.0e+300, .double, 0x7e37_e43c_8800_759c);
+    try Preferred.expect(0x1p-1074, .double, 1);
 
-test "preferred serialization picks the shortest exact width" {
-    try expectPreferred(0.0, .half, 0x0000);
-    try expectPreferred(-0.0, .half, 0x8000);
-    try expectPreferred(1.0, .half, 0x3c00);
-    try expectPreferred(1.5, .half, 0x3e00);
-    try expectPreferred(65504.0, .half, 0x7bff);
-    try expectPreferred(5.960464477539063e-8, .half, 0x0001);
-    try expectPreferred(0.00006103515625, .half, 0x0400);
-    try expectPreferred(-4.0, .half, 0xc400);
-    try expectPreferred(std.math.inf(f64), .half, 0x7c00);
-    try expectPreferred(-std.math.inf(f64), .half, 0xfc00);
-    try expectPreferred(100000.0, .single, 0x47c3_5000);
-    try expectPreferred(3.4028234663852886e+38, .single, 0x7f7f_ffff);
-    try expectPreferred(0x1p-149, .single, 0x0000_0001);
-    try expectPreferred(0x1p-25, .single, 0x3300_0000);
-    try expectPreferred(1.1, .double, 0x3ff1_9999_9999_999a);
-    try expectPreferred(1.0e+300, .double, 0x7e37_e43c_8800_759c);
-    try expectPreferred(0x1p-1074, .double, 1);
-}
-
-test "NaN payloads are preserved across widths" {
-    try expectPreferred(@bitCast(@as(u64, 0x7ff8_0000_0000_0000)), .half, 0x7e00);
-    try expectPreferred(@bitCast(@as(u64, 0xfff8_0000_0000_0000)), .half, 0xfe00);
-    try expectPreferred(@bitCast(@as(u64, 0x7ff0_0020_0000_0000)), .single, 0x7f80_0100);
-    try expectPreferred(@bitCast(@as(u64, 0x7ff0_0000_0000_0001)), .double, 0x7ff0_0000_0000_0001);
-    try testing.expectEqual(@as(u64, 0x7ff0_0400_0000_0000), @as(u64, @bitCast(fromHalf(0x7c01))));
-    try testing.expectEqual(@as(u64, 0x7ff0_0000_2000_0000), @as(u64, @bitCast(fromSingle(0x7f80_0001))));
+    try Preferred.expect(@bitCast(@as(u64, 0x7ff8_0000_0000_0000)), .half, 0x7e00);
+    try Preferred.expect(@bitCast(@as(u64, 0xfff8_0000_0000_0000)), .half, 0xfe00);
+    try Preferred.expect(@bitCast(@as(u64, 0x7ff0_0020_0000_0000)), .single, 0x7f80_0100);
+    try Preferred.expect(@bitCast(@as(u64, 0x7ff0_0000_0000_0001)), .double, 0x7ff0_0000_0000_0001);
+    try std.testing.expectEqual(@as(u64, 0x7ff0_0400_0000_0000), @as(u64, @bitCast(fromHalf(0x7c01))));
+    try std.testing.expectEqual(@as(u64, 0x7ff0_0000_2000_0000), @as(u64, @bitCast(fromSingle(0x7f80_0001))));
 }
 
 test "key normalization and equality" {
-    try testing.expectEqual(@as(u64, 0), @as(u64, @bitCast(keyNormalized(-0.0))));
+    try std.testing.expectEqual(@as(u64, 0), @as(u64, @bitCast(keyNormalized(-0.0))));
     const negative_nan: f64 = @bitCast(@as(u64, 0xfff8_0000_0000_0000));
-    try testing.expectEqual(@as(u64, 0x7ff8_0000_0000_0000), @as(u64, @bitCast(keyNormalized(negative_nan))));
-    try testing.expect(eql(0.0, -0.0));
-    try testing.expect(eql(negative_nan, std.math.nan(f64)));
-    try testing.expect(!eql(std.math.nan(f64), 1.0));
-    try testing.expect(!eql(1.0, 2.0));
+    try std.testing.expectEqual(@as(u64, 0x7ff8_0000_0000_0000), @as(u64, @bitCast(keyNormalized(negative_nan))));
+    try std.testing.expect(eql(0.0, -0.0));
+    try std.testing.expect(eql(negative_nan, std.math.nan(f64)));
+    try std.testing.expect(!eql(std.math.nan(f64), 1.0));
+    try std.testing.expect(!eql(1.0, 2.0));
 }
